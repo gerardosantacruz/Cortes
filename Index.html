@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Guía de cortes (pizza/torta/alfajor)</title>
+<style>
+  :root {
+    --ui-bg: rgba(0,0,0,.55);
+    --ui-fg: #fff;
+    --accent: #22c55e;
+  }
+  html, body { height: 100%; margin: 0; background:#000; color:#fff; font-family: system-ui, -apple-system, Roboto, Segoe UI, Ubuntu, Cantarell, sans-serif; }
+  #app { position: relative; height: 100%; overflow: hidden; }
+  video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); } /* espejo para uso natural */
+  canvas { position: absolute; inset: 0; pointer-events: none; }
+  .ui {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 12px; display: grid; gap: 10px;
+    background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,.65) 30%, rgba(0,0,0,.85) 100%);
+  }
+  .panel {
+    background: var(--ui-bg); backdrop-filter: blur(6px);
+    border: 1px solid rgba(255,255,255,.1); border-radius: 16px; padding: 10px 12px;
+    display: grid; gap: 8px;
+  }
+  .row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
+  .row > label { font-size: 14px; opacity: .9; }
+  select, input[type="range"], input[type="checkbox"] {
+    accent-color: var(--accent);
+  }
+  select, .button {
+    background: rgba(255,255,255,.08); color: var(--ui-fg); border: 1px solid rgba(255,255,255,.15);
+    padding: 8px 10px; border-radius: 10px; font-size: 15px;
+  }
+  .button { cursor: pointer; }
+  .topbar {
+    position: absolute; left: 0; right: 0; top: 0; display: flex; justify-content: space-between; align-items: center;
+    padding: 10px; gap: 8px; pointer-events: none;
+  }
+  .chip { pointer-events: auto; background: var(--ui-bg); border: 1px solid rgba(255,255,255,.15); border-radius: 999px; padding: 6px 10px; font-size: 13px; }
+  .hint { font-size: 12px; opacity: .75; text-align: center; }
+  .crosshair { position: absolute; inset: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="overlay"></canvas>
+
+  <!-- líneas finas que ayudan a centrar -->
+  <svg class="crosshair" viewBox="0 0 100 100" preserveAspectRatio="none">
+    <line x1="50" y1="0" x2="50" y2="100" stroke="white" stroke-opacity=".12" stroke-width="0.4"/>
+    <line x1="0" y1="50" x2="100" y2="50" stroke="white" stroke-opacity=".12" stroke-width="0.4"/>
+  </svg>
+
+  <div class="topbar">
+    <span class="chip">Guía de cortes</span>
+    <button id="flipBtn" class="chip button">Cambiar cámara</button>
+  </div>
+
+  <div class="ui">
+    <div class="panel">
+      <div class="row">
+        <label for="parts">Partes</label>
+        <select id="parts">
+          <option>2</option><option>3</option><option>4</option><option>5</option><option>6</option>
+          <option>7</option><option selected>8</option><option>10</option><option>12</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="rotation">Rotación (<span id="deg">0</span>°)</label>
+        <input id="rotation" type="range" min="0" max="359" value="0" />
+      </div>
+      <div class="row">
+        <label for="circle">Ajustar círculo</label>
+        <input id="circle" type="range" min="10" max="100" value="80" />
+      </div>
+      <div class="row">
+        <label for="labels">Mostrar ángulos</label>
+        <input id="labels" type="checkbox" />
+      </div>
+      <div class="hint">Gira con el deslizador o arrastrando con un dedo. Acerca/aleja el círculo para que coincida con el borde de la pizza/torta.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(async function(){
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('overlay');
+  const ctx = canvas.getContext('2d');
+  const partsSel = document.getElementById('parts');
+  const rot = document.getElementById('rotation');
+  const degLabel = document.getElementById('deg');
+  const circle = document.getElementById('circle');
+  const showLabels = document.getElementById('labels');
+  const flipBtn = document.getElementById('flipBtn');
+
+  let facing = 'environment'; // trasera por defecto
+  let angle = 0;
+  let dragging = false;
+  let lastX = 0;
+  let rafId;
+
+  function resize() {
+    const { clientWidth: w, clientHeight: h } = canvas;
+    canvas.width = w; canvas.height = h;
+  }
+  new ResizeObserver(resize).observe(canvas);
+
+  async function startCamera() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: facing, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        audio: false
+      });
+      video.srcObject = stream;
+    } catch (e) {
+      alert('No se pudo abrir la cámara. Asegúrate de usar HTTPS o conceder permisos.\n' + e.message);
+    }
+  }
+  flipBtn.addEventListener('click', async () => {
+    // cambiar cámara
+    facing = (facing === 'environment') ? 'user' : 'environment';
+    // detener actual
+    if (video.srcObject) video.srcObject.getTracks().forEach(t=>t.stop());
+    await startCamera();
+    // espejar solo cuando es frontal
+    video.style.transform = (facing === 'user') ? 'scaleX(-1)' : 'scaleX(-1)'; // mantenemos espejo para cortar mirando
+  });
+
+  // interacción táctil/ratón para rotar
+  canvas.addEventListener('pointerdown', (e)=>{ dragging = true; lastX = e.clientX; });
+  window.addEventListener('pointerup', ()=> dragging = false);
+  window.addEventListener('pointermove', (e)=>{
+    if (!dragging) return;
+    const dx = e.clientX - lastX;
+    lastX = e.clientX;
+    angle = (angle + dx * 0.3) % 360;
+    rot.value = ((+rot.value + dx * 0.3)%360+360)%360;
+    degLabel.textContent = Math.round(((+rot.value)%360+360)%360);
+  });
+
+  rot.addEventListener('input', ()=>{
+    angle = +rot.value;
+    degLabel.textContent = Math.round(angle);
+  });
+
+  function draw() {
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0,0,w,h);
+
+    // círculo escalable centrado
+    const r = Math.min(w, h) * (+circle.value / 200); // valor 10-100 -> radio ~5%-50% min dimensión
+    const cx = w/2, cy = h/2;
+
+    // halo
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI*2);
+    ctx.strokeStyle = 'rgba(255,255,255,.85)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
+    ctx.stroke();
+
+    const n = +partsSel.value;
+    const step = 360 / n;
+
+    // líneas radiales
+    for (let i=0;i<n;i++){
+      const a = (angle + i*step) * Math.PI/180;
+      const x = cx + Math.cos(a)*r;
+      const y = cy + Math.sin(a)*r;
+
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(x, y);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(34,197,94,.95)'; // verde sutil para ver sobre masa/salsa
+      ctx.setLineDash([8,8]);
+      ctx.stroke();
+
+      if (showLabels.checked) {
+        // etiqueta de ángulo
+        const la = (angle + i*step) % 360;
+        const tx = cx + Math.cos(a) * (r + 22);
+        const ty = cy + Math.sin(a) * (r + 22);
+        ctx.fillStyle = 'rgba(255,255,255,.9)';
+        ctx.font = '12px system-ui, -apple-system, Roboto, sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(`${Math.round(la)}°`, tx, ty);
+      }
+    }
+
+    // punto central
+    ctx.beginPath();
+    ctx.arc(cx, cy, 4, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(255,255,255,.9)';
+    ctx.fill();
+
+    rafId = requestAnimationFrame(draw);
+  }
+
+  partsSel.addEventListener('change', ()=>{/* redibuja automáticamente */});
+  circle.addEventListener('input', ()=>{/* redibuja automáticamente */});
+  showLabels.addEventListener('change', ()=>{/* redibuja automáticamente */});
+
+  await startCamera();
+  resize();
+  draw();
+
+  // limpieza al salir
+  window.addEventListener('pagehide', ()=>{
+    cancelAnimationFrame(rafId);
+    if (video.srcObject) video.srcObject.getTracks().forEach(t=>t.stop());
+  });
+})();
+</script>
+</body>
+</html>
